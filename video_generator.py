@@ -31,8 +31,9 @@ CONTENT_W   = WIDTH - 2 * MARGIN
 FONT_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 FONT_REG  = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
 
-ASSETS_DIR  = Path(__file__).parent / "assets"
-BG_IMAGE    = ASSETS_DIR / "bg_office.png"   # NAKACHI office photo
+ASSETS_DIR    = Path(__file__).parent / "assets"
+BG_IMAGE      = ASSETS_DIR / "bg_office.png"   # NAKACHI office photo
+HEADSHOT_PATH = ASSETS_DIR / "headshot.jpg"     # Dr. Sam Ikoku presenter photo
 
 
 # ─── Background ──────────────────────────────────────────────────────────────
@@ -57,6 +58,78 @@ def _overlay(base: Image.Image, alpha: int = 160) -> Image.Image:
     out  = base.convert("RGBA")
     out.alpha_composite(tint)
     return out.convert("RGB")
+
+
+# ─── Presenter compositing ────────────────────────────────────────────────────
+
+def _load_headshot(target_w: int, target_h: int) -> "Image.Image | None":
+    """Load and scale headshot to fit within target_w × target_h."""
+    if not HEADSHOT_PATH.exists():
+        return None
+    src   = Image.open(HEADSHOT_PATH).convert("RGBA")
+    sw, sh = src.size
+    scale = min(target_w / sw, target_h / sh)
+    return src.resize((int(sw * scale), int(sh * scale)), Image.LANCZOS)
+
+
+def _presenter_hook(img: Image.Image) -> Image.Image:
+    """Composite presenter photo into lower 58% of hook frame, fading in at top."""
+    shot = _load_headshot(WIDTH, int(HEIGHT * 0.62))
+    if shot is None:
+        return img
+    w, h = shot.size
+    mask = Image.new("L", (w, h), 255)
+    fade = int(h * 0.38)
+    md   = ImageDraw.Draw(mask)
+    for row in range(fade):
+        md.line([(0, row), (w, row)], fill=int(255 * (row / fade)))
+    shot.putalpha(mask)
+    base = img.convert("RGBA")
+    base.alpha_composite(shot, dest=((WIDTH - w) // 2, HEIGHT - h))
+    return base.convert("RGB")
+
+
+def _presenter_avatar(img: Image.Image, size: int = 270,
+                      right_margin: int = 80, bottom_margin: int = 90) -> Image.Image:
+    """Paste a circular presenter avatar with gold ring in the bottom-right corner."""
+    shot = _load_headshot(size, size)
+    if shot is None:
+        return img
+    sw, sh = shot.size
+    sq     = min(sw, sh)
+    shot   = shot.crop(((sw - sq) // 2, (sh - sq) // 2,
+                         (sw + sq) // 2, (sh + sq) // 2)).resize((size, size), Image.LANCZOS)
+    circle = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(circle).ellipse([0, 0, size - 1, size - 1], fill=255)
+    shot   = shot.convert("RGBA")
+    shot.putalpha(circle)
+
+    x, y  = WIDTH - size - right_margin, HEIGHT - size - bottom_margin
+    base  = img.convert("RGBA")
+    ring  = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    b     = 5
+    ImageDraw.Draw(ring).ellipse([x - b, y - b, x + size + b, y + size + b],
+                                  outline=(*GOLD, 255), width=b)
+    base  = Image.alpha_composite(base, ring)
+    base.alpha_composite(shot, dest=(x, y))
+    return base.convert("RGB")
+
+
+def _presenter_cta(img: Image.Image) -> Image.Image:
+    """Composite presenter photo in upper portion of CTA frame, fading out at bottom."""
+    shot = _load_headshot(int(WIDTH * 0.72), int(HEIGHT * 0.50))
+    if shot is None:
+        return img
+    w, h  = shot.size
+    mask  = Image.new("L", (w, h), 255)
+    start = int(h * 0.68)
+    md    = ImageDraw.Draw(mask)
+    for row in range(start, h):
+        md.line([(0, row), (w, row)], fill=int(255 * (1 - (row - start) / (h - start))))
+    shot.putalpha(mask)
+    base = img.convert("RGBA")
+    base.alpha_composite(shot, dest=((WIDTH - w) // 2, 75))
+    return base.convert("RGB")
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -102,8 +175,8 @@ def _centered_x(text, font) -> int:
 # ─── Frame builders ───────────────────────────────────────────────────────────
 
 def _frame_hook(data: dict, fonts: dict) -> Image.Image:
-    # Background: full photo, light tint so city skyline stays visible
-    img = _overlay(_load_bg(), alpha=120)
+    # Background + presenter photo (lower portion, gradient fade)
+    img = _presenter_hook(_overlay(_load_bg(), alpha=120))
     d   = ImageDraw.Draw(img)
 
     # Gold bars
@@ -121,7 +194,8 @@ def _frame_hook(data: dict, fonts: dict) -> Image.Image:
     h_lines = _wrap(headline, fonts["xl"], CONTENT_W)
     s_lines = _wrap(subtext, fonts["md"], CONTENT_W) if subtext else []
     total_h = len(h_lines) * 106 + (len(s_lines) * 60 + 56 if s_lines else 0)
-    y = max(340, (HEIGHT - total_h) // 2)
+    # Keep text in upper 42% so it clears the presenter photo
+    y = max(130, min(700, (int(HEIGHT * 0.42) - total_h) // 2 + 80))
 
     # Semi-transparent pill behind headline for readability
     pad = 24
@@ -130,7 +204,7 @@ def _frame_hook(data: dict, fonts: dict) -> Image.Image:
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
     od.rectangle([MARGIN - pad, pill_top, WIDTH - MARGIN + pad, pill_bottom],
-                 fill=(13, 27, 42, 180))
+                 fill=(13, 27, 42, 195))
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     d   = ImageDraw.Draw(img)
 
@@ -148,9 +222,8 @@ def _frame_hook(data: dict, fonts: dict) -> Image.Image:
 
 
 def _frame_content(data: dict, fonts: dict) -> Image.Image:
-    # Background: heavier tint on top half for text, lighter on bottom
-    bg  = _load_bg()
-    img = _overlay(bg, alpha=175)
+    # Background: heavier tint + circular avatar in bottom-right
+    img = _presenter_avatar(_overlay(_load_bg(), alpha=175))
     d   = ImageDraw.Draw(img)
 
     d.rectangle([0, 0, WIDTH, 10], fill=GOLD)
@@ -176,12 +249,16 @@ def _frame_content(data: dict, fonts: dict) -> Image.Image:
     if body:
         _draw_block(d, body, MARGIN, y, fonts["md"], LIGHT, CONTENT_W, gap=18)
 
+    # Name badge bottom-left, above gold bar
+    d.text((MARGIN, HEIGHT - 95), "Dr. Sam Ikoku  ·  NAKACHI Consulting", fill=GOLD,
+           font=fonts["sm"])
+
     return img
 
 
 def _frame_cta(data: dict, fonts: dict) -> Image.Image:
-    # CTA: light tint so the beautiful office is visible behind branding
-    img = _overlay(_load_bg(), alpha=100)
+    # CTA: presenter photo in upper portion, branding panel in lower portion
+    img = _presenter_cta(_overlay(_load_bg(), alpha=100))
     d   = ImageDraw.Draw(img)
 
     d.rectangle([0, 0, WIDTH, 10], fill=GOLD)
@@ -189,17 +266,16 @@ def _frame_cta(data: dict, fonts: dict) -> Image.Image:
 
     headline = data.get("headline", "Follow for more")
 
-    # Central branded panel
-    panel_top    = HEIGHT // 2 - 230
-    panel_bottom = HEIGHT // 2 + 230
+    # Branding panel anchored to bottom half
+    panel_top    = int(HEIGHT * 0.52)
+    panel_bottom = HEIGHT - 20
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
-    od.rectangle([MARGIN - 20, panel_top, WIDTH - MARGIN + 20, panel_bottom],
-                 fill=(13, 27, 42, 210))
+    od.rectangle([0, panel_top, WIDTH, panel_bottom], fill=(13, 27, 42, 218))
     img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     d   = ImageDraw.Draw(img)
 
-    y = panel_top + 36
+    y = panel_top + 40
     d.rectangle([MARGIN, y, WIDTH - MARGIN, y + 4], fill=GOLD)
     y += 36
 
@@ -217,6 +293,10 @@ def _frame_cta(data: dict, fonts: dict) -> Image.Image:
 
     sub = "CONSULTING"
     d.text((_centered_x(sub, fonts["sm"]), y), sub, fill=WHITE, font=fonts["sm"])
+    y += fonts["sm"].getbbox(sub)[3] + 20
+
+    d.text((_centered_x("Dr. Sam Ikoku", fonts["sm"]), y),
+           "Dr. Sam Ikoku", fill=GOLD, font=fonts["sm"])
 
     return img
 
