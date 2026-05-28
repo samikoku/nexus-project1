@@ -171,12 +171,34 @@ def make_frame(slide_type: str, data: dict, fonts: dict) -> Image.Image:
 
 # ─── TTS ─────────────────────────────────────────────────────────────────────
 
-def tts(text: str, wav_path: str, voice: str = "en+m3", speed: int = 145) -> None:
-    """Generate WAV audio using espeak-ng (offline)."""
+def tts(text: str, wav_path: str, voice: str = "mb-us1", speed: int = 145) -> None:
+    """Generate WAV audio using espeak-ng + MBROLA (offline).
+
+    Default voice is mb-us1 (MBROLA US English, more natural than raw espeak-ng).
+    Switch to voice="xtts" once XTTS v2 model files are placed in ~/.local/share/tts/xtts_v2/.
+    """
     subprocess.run(
         ["espeak-ng", "-v", voice, "-s", str(speed), "-w", wav_path, text],
         check=True, capture_output=True
     )
+
+
+def tts_xtts(text: str, wav_path: str, speaker_wav: str,
+             model_dir: str = "/root/.local/share/tts/xtts_v2") -> None:
+    """Generate audio in the speaker's voice using XTTS v2.
+
+    Requires the 4 XTTS v2 model files in model_dir:
+        config.json, model.pth, speakers_xtts.pth, vocab.json
+    Upload them from https://huggingface.co/coqui/XTTS-v2 via Google Drive,
+    then call: use_voice_clone(speaker_wav_path) to activate.
+    """
+    import os; os.environ["COQUI_TOS_AGREED"] = "1"
+    from TTS.api import TTS as CoquiTTS
+    model = CoquiTTS(model_path=model_dir,
+                     config_path=f"{model_dir}/config.json",
+                     progress_bar=False)
+    model.tts_to_file(text=text, speaker_wav=speaker_wav,
+                      language="en", file_path=wav_path)
 
 
 # ─── Script generation ────────────────────────────────────────────────────────
@@ -223,14 +245,17 @@ def generate_script(topic: str) -> dict:
 
 # ─── Main pipeline ────────────────────────────────────────────────────────────
 
-def create_video(topic: str, output_path: str | None = None, output_dir: str = "output") -> str:
+def create_video(topic: str, output_path: str | None = None, output_dir: str = "output",
+                 speaker_wav: str | None = None) -> str:
     """
     Full pipeline: topic string → .mp4 file.
 
     Args:
-        topic:       Topic for the Short (e.g. "Nigeria NERC Mini-Grid 2026")
-        output_path: Filename for the output (auto-generated if None)
-        output_dir:  Directory to write the video into
+        topic:        Topic for the Short (e.g. "Nigeria NERC Mini-Grid 2026")
+        output_path:  Filename for the output (auto-generated if None)
+        output_dir:   Directory to write the video into
+        speaker_wav:  Path to a .wav voice sample for XTTS v2 cloning.
+                      If None, falls back to MBROLA offline TTS.
 
     Returns:
         Absolute path of the generated .mp4 file.
@@ -268,7 +293,10 @@ def create_video(topic: str, output_path: str | None = None, output_dir: str = "
             wav_path = os.path.join(tmp, f"audio_{i:02d}.wav")
 
             make_frame(sec["type"], sec["frame"], fonts).save(img_path)
-            tts(sec["vo"], wav_path)
+            if speaker_wav:
+                tts_xtts(sec["vo"], wav_path, speaker_wav)
+            else:
+                tts(sec["vo"], wav_path)
 
             audio    = AudioFileClip(wav_path)
             duration = audio.duration + 0.4
