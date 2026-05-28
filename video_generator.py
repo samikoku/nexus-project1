@@ -15,21 +15,48 @@ import shutil
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from moviepy import ImageClip, AudioFileClip, concatenate_videoclips
 import anthropic
 
 # ─── Visual constants ────────────────────────────────────────────────────────
 WIDTH, HEIGHT = 1080, 1920          # 9:16 portrait (YouTube Shorts)
-BG          = (13,  27,  42)        # #0d1b2a  Deep Ink
+BG          = (13,  27,  42)        # #0d1b2a  Deep Ink (fallback only)
 GOLD        = (197, 160,  89)       # #c5a059  Brushed Gold
 WHITE       = (255, 255, 255)
-LIGHT       = (200, 215, 230)       # body text
+LIGHT       = (220, 230, 240)       # body text
 MARGIN      = 90
 CONTENT_W   = WIDTH - 2 * MARGIN
 
 FONT_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 FONT_REG  = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+
+ASSETS_DIR  = Path(__file__).parent / "assets"
+BG_IMAGE    = ASSETS_DIR / "bg_office.png"   # NAKACHI office photo
+
+
+# ─── Background ──────────────────────────────────────────────────────────────
+
+def _load_bg() -> Image.Image:
+    """Scale + centre-crop the office photo to exactly 1080×1920."""
+    if not BG_IMAGE.exists():
+        return Image.new("RGB", (WIDTH, HEIGHT), (13, 27, 42))
+    src = Image.open(BG_IMAGE).convert("RGB")
+    sw, sh = src.size
+    scale  = max(WIDTH / sw, HEIGHT / sh)
+    nw, nh = int(sw * scale), int(sh * scale)
+    src    = src.resize((nw, nh), Image.LANCZOS)
+    left   = (nw - WIDTH)  // 2
+    top    = (nh - HEIGHT) // 2
+    return src.crop((left, top, left + WIDTH, top + HEIGHT))
+
+
+def _overlay(base: Image.Image, alpha: int = 160) -> Image.Image:
+    """Lay a Deep Ink tint over the photo (alpha 0–255, higher = darker)."""
+    tint = Image.new("RGBA", (WIDTH, HEIGHT), (13, 27, 42, alpha))
+    out  = base.convert("RGBA")
+    out.alpha_composite(tint)
+    return out.convert("RGB")
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -75,56 +102,75 @@ def _centered_x(text, font) -> int:
 # ─── Frame builders ───────────────────────────────────────────────────────────
 
 def _frame_hook(data: dict, fonts: dict) -> Image.Image:
-    img = Image.new("RGB", (WIDTH, HEIGHT), BG)
+    # Background: full photo, light tint so city skyline stays visible
+    img = _overlay(_load_bg(), alpha=120)
     d   = ImageDraw.Draw(img)
 
-    d.rectangle([0, 0, WIDTH, 8], fill=GOLD)
-    d.rectangle([0, HEIGHT - 8, WIDTH, HEIGHT], fill=GOLD)
-    d.text((MARGIN, 36), "NAKACHI", fill=GOLD, font=fonts["brand"])
+    # Gold bars
+    d.rectangle([0, 0, WIDTH, 10], fill=GOLD)
+    d.rectangle([0, HEIGHT - 10, WIDTH, HEIGHT], fill=GOLD)
+
+    # Brand mark
+    d.text((MARGIN, 38), "NAKACHI", fill=GOLD, font=fonts["brand"])
+    d.text((MARGIN + fonts["brand"].getbbox("NAKACHI")[2] + 12, 46),
+           "CONSULTING", fill=WHITE, font=fonts["sm"])
 
     headline = data.get("headline", "")
     subtext  = data.get("subtext", "")
 
     h_lines = _wrap(headline, fonts["xl"], CONTENT_W)
-    s_lines = _wrap(subtext,  fonts["md"], CONTENT_W) if subtext else []
-    total_h = len(h_lines) * 102 + (len(s_lines) * 58 + 48 if s_lines else 0)
-    y = max(300, (HEIGHT - total_h) // 2)
+    s_lines = _wrap(subtext, fonts["md"], CONTENT_W) if subtext else []
+    total_h = len(h_lines) * 106 + (len(s_lines) * 60 + 56 if s_lines else 0)
+    y = max(340, (HEIGHT - total_h) // 2)
+
+    # Semi-transparent pill behind headline for readability
+    pad = 24
+    pill_top    = y - pad
+    pill_bottom = y + total_h + pad
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    od.rectangle([MARGIN - pad, pill_top, WIDTH - MARGIN + pad, pill_bottom],
+                 fill=(13, 27, 42, 180))
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    d   = ImageDraw.Draw(img)
 
     for line in h_lines:
         d.text((_centered_x(line, fonts["xl"]), y), line, fill=GOLD, font=fonts["xl"])
-        y += fonts["xl"].getbbox(line)[3] + 14
+        y += fonts["xl"].getbbox(line)[3] + 16
 
     if subtext:
-        y += 48
+        y += 40
         for line in s_lines:
             d.text((_centered_x(line, fonts["md"]), y), line, fill=WHITE, font=fonts["md"])
-            y += fonts["md"].getbbox(line)[3] + 12
+            y += fonts["md"].getbbox(line)[3] + 14
 
     return img
 
 
 def _frame_content(data: dict, fonts: dict) -> Image.Image:
-    img = Image.new("RGB", (WIDTH, HEIGHT), BG)
+    # Background: heavier tint on top half for text, lighter on bottom
+    bg  = _load_bg()
+    img = _overlay(bg, alpha=175)
     d   = ImageDraw.Draw(img)
 
-    d.rectangle([0, 0, WIDTH, 8], fill=GOLD)
-    d.rectangle([0, HEIGHT - 8, WIDTH, HEIGHT], fill=GOLD)
-    d.text((MARGIN, 36), "NAKACHI", fill=GOLD, font=fonts["brand"])
+    d.rectangle([0, 0, WIDTH, 10], fill=GOLD)
+    d.rectangle([0, HEIGHT - 10, WIDTH, HEIGHT], fill=GOLD)
+    d.text((MARGIN, 38), "NAKACHI", fill=GOLD, font=fonts["brand"])
 
+    # Progress dots
     total = data.get("total", 1)
     idx   = data.get("slide_idx", 1)
-    dot_x = MARGIN
+    dx    = MARGIN
     for i in range(total):
-        fill = GOLD if i < idx else (40, 65, 90)
-        d.ellipse([dot_x, 118, dot_x + 20, 138], fill=fill)
-        dot_x += 36
+        d.ellipse([dx, 118, dx + 20, 138], fill=GOLD if i < idx else (80, 100, 120))
+        dx += 36
 
-    y = 190
+    y = 195
     y = _draw_block(d, data.get("title", ""), MARGIN, y, fonts["lg"], GOLD, CONTENT_W, gap=14)
 
-    y += 22
-    d.rectangle([MARGIN, y, MARGIN + 130, y + 5], fill=GOLD)
-    y += 46
+    y += 20
+    d.rectangle([MARGIN, y, MARGIN + 140, y + 5], fill=GOLD)
+    y += 44
 
     body = data.get("body", "")
     if body:
@@ -134,32 +180,43 @@ def _frame_content(data: dict, fonts: dict) -> Image.Image:
 
 
 def _frame_cta(data: dict, fonts: dict) -> Image.Image:
-    img = Image.new("RGB", (WIDTH, HEIGHT), BG)
+    # CTA: light tint so the beautiful office is visible behind branding
+    img = _overlay(_load_bg(), alpha=100)
     d   = ImageDraw.Draw(img)
 
-    d.rectangle([0, 0, WIDTH, 8], fill=GOLD)
-    d.rectangle([0, HEIGHT - 8, WIDTH, HEIGHT], fill=GOLD)
+    d.rectangle([0, 0, WIDTH, 10], fill=GOLD)
+    d.rectangle([0, HEIGHT - 10, WIDTH, HEIGHT], fill=GOLD)
 
     headline = data.get("headline", "Follow for more")
 
-    y = HEIGHT // 2 - 180
+    # Central branded panel
+    panel_top    = HEIGHT // 2 - 230
+    panel_bottom = HEIGHT // 2 + 230
+    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    od.rectangle([MARGIN - 20, panel_top, WIDTH - MARGIN + 20, panel_bottom],
+                 fill=(13, 27, 42, 210))
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    d   = ImageDraw.Draw(img)
+
+    y = panel_top + 36
     d.rectangle([MARGIN, y, WIDTH - MARGIN, y + 4], fill=GOLD)
-    y += 44
+    y += 36
 
     for line in _wrap(headline, fonts["lg"], CONTENT_W):
         d.text((_centered_x(line, fonts["lg"]), y), line, fill=WHITE, font=fonts["lg"])
         y += fonts["lg"].getbbox(line)[3] + 16
 
-    y += 40
+    y += 28
     d.rectangle([MARGIN, y, WIDTH - MARGIN, y + 4], fill=GOLD)
-    y += 72
+    y += 52
 
     brand = "NAKACHI"
     d.text((_centered_x(brand, fonts["xl"]), y), brand, fill=GOLD, font=fonts["xl"])
-    y += fonts["xl"].getbbox(brand)[3] + 16
+    y += fonts["xl"].getbbox(brand)[3] + 14
 
-    sub = "Consulting"
-    d.text((_centered_x(sub, fonts["md"]), y), sub, fill=WHITE, font=fonts["md"])
+    sub = "CONSULTING"
+    d.text((_centered_x(sub, fonts["sm"]), y), sub, fill=WHITE, font=fonts["sm"])
 
     return img
 
