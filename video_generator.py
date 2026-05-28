@@ -171,10 +171,16 @@ def make_frame(slide_type: str, data: dict, fonts: dict) -> Image.Image:
 
 # ─── TTS ─────────────────────────────────────────────────────────────────────
 
-def tts(text: str, wav_path: str, voice: str = "en+m3", speed: int = 145) -> None:
-    """Generate WAV audio using espeak-ng (offline)."""
+def tts(text: str, wav_path: str, voice: str = "en-gb",
+        speed: int = 148, pitch: int = 55, amplitude: int = 180) -> None:
+    """Generate clean mono WAV using espeak-ng.
+
+    en-gb: authoritative British English, clean 22 kHz mono — no double-track artifact.
+    For your own voice, use tts_xtts() once the XTTS v2 model is available.
+    """
     subprocess.run(
-        ["espeak-ng", "-v", voice, "-s", str(speed), "-w", wav_path, text],
+        ["espeak-ng", "-v", voice, "-s", str(speed),
+         "-p", str(pitch), "-a", str(amplitude), "-w", wav_path, text],
         check=True, capture_output=True
     )
 
